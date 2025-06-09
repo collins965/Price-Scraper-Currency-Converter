@@ -1,136 +1,112 @@
-import requests
-from bs4 import BeautifulSoup
-import pandas as pd
-import matplotlib.pyplot as plt
-from datetime import datetime
-import time
-import csv
+import requests  # HTTP requests
+from bs4 import BeautifulSoup  # HTML parsing
+import pandas as pd  # Data handling
+import matplotlib.pyplot as plt  # Plotting
+from datetime import datetime  # Timestamping
+import csv  # CSV file operations
+import time  # Delay handling
 
-# Constants for the scraping and currency conversion
-BASE_URL = "https://books.toscrape.com/catalogue/page-{}.html"
-EXCHANGE_API_BASE = "https://api.exchangerate-api.com/v4/latest/GBP"
-HEADERS = {'User-Agent': 'Mozilla/5.0'}
+BASE_URL = "https://books.toscrape.com/catalogue/page-{}.html"  # URL template for book pages
+EXCHANGE_API = "https://api.exchangerate-api.com/v4/latest/GBP"  # Exchange rate API URL
+HEADERS = {'User-Agent': 'Mozilla/5.0'}  # Request headers for scraping
 
-# Scrapes book names and GBP prices from paginated book listing site
-def scrape_books(target_count=10):
-    products = []
-    page = 1  # Start from the first page
+def scrape_books(count=10):
+    # Scrape book titles and prices from multiple pages until count reached
+    books = []
+    page = 1
 
-    while len(products) < target_count:
+    while len(books) < count:
         try:
-            url = BASE_URL.format(page)
-            res = requests.get(url, headers=HEADERS, timeout=5)
-            res.raise_for_status()
-            soup = BeautifulSoup(res.text, "html.parser")
+            response = requests.get(BASE_URL.format(page), headers=HEADERS, timeout=5)  # Fetch page
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")  # Parse HTML
 
-            books = soup.select(".product_pod")
-            for book in books:
-                name = book.h3.a["title"]
-                price_text = book.select_one(".price_color").text.strip()  # e.g., £51.77
-                price_gbp = float(price_text.replace("£", ""))
-                products.append({"name": name, "price_gbp": price_gbp})
+            for book in soup.select(".product_pod"):  # Loop through books on page
+                title = book.h3.a["title"]  # Extract book title
+                price = float(book.select_one(".price_color").text.replace("£", ""))  # Extract price
+                books.append({"name": title, "price_gbp": price})  # Add to list
 
-                # Stop collecting once we reach the target count
-                if len(products) >= target_count:
-                    break
+                if len(books) == count:
+                    break  # Stop if desired count reached
 
-            page += 1  # Move to the next page
-        except requests.exceptions.RequestException as e:
-            print(f"Error fetching page {page}: {e}")
-            time.sleep(1)  # Short delay before stopping
+            page += 1  # Next page
+
+        except Exception as e:
+            print(f"Error fetching page {page}: {e}")  # Print error
+            time.sleep(1)  # Wait before stopping
             break
 
-    return products
+    return books  # Return list of books
 
-# Retrieves the exchange rate between GBP and the given target currency
-def get_exchange_rate(target_currency):
+def get_rate(currency):
+    # Fetch exchange rate for currency; fallback to default if fails
     try:
-        res = requests.get(EXCHANGE_API_BASE, timeout=5)
-        res.raise_for_status()
-        data = res.json()
-        rate = data['rates'].get(target_currency.upper(), None)
-        if rate is None:
-            raise ValueError(f"Currency '{target_currency}' not supported.")
-        return rate
+        response = requests.get(EXCHANGE_API, timeout=5)  # Request rates
+        data = response.json()
+        return data['rates'].get(currency.upper(), 180.0)  # Get rate or default
     except Exception as e:
-        # If API fails, return a fallback rate (e.g., for KES)
-        print(f"Failed to fetch exchange rate ({e}), using fallback rate.")
-        return 180.0  # fallback value
+        print(f"Could not get exchange rate: {e}")
+        return 180.0
 
-# Adds converted currency price and timestamp to each product
-def convert_prices(products, rate, target_currency):
-    for product in products:
-        product[f"price_{target_currency.lower()}"] = round(product["price_gbp"] * rate, 2)
-        product["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return products
+def convert(books, rate, currency):
+    # Convert GBP prices to target currency and add timestamp
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for book in books:
+        book[f"price_{currency.lower()}"] = round(book["price_gbp"] * rate, 2)
+        book["timestamp"] = now
+    return books
 
-# Writes product data to a CSV file
-def save_to_csv(products, filename="converted_prices.csv"):
-    keys = products[0].keys()
-    with open(filename, "w", newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=keys)
+def save_csv(data, filename="converted_prices.csv"):
+    # Save book data as CSV file
+    with open(filename, "w", newline='', encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=data[0].keys())
         writer.writeheader()
-        writer.writerows(products)
+        writer.writerows(data)
 
-# Displays the prices in GBP and target currency in a table format
-def display_table(products, target_currency):
-    df = pd.DataFrame(products)
-    print(f"\nProduct Prices (GBP to {target_currency.upper()}):\n")
-    cols = ["name", "price_gbp", f"price_{target_currency.lower()}", "timestamp"]
-    print(df[cols])
+def show_table(data, currency):
+    # Display book data as a pandas DataFrame and print key columns
+    df = pd.DataFrame(data)
+    print(df[["name", "price_gbp", f"price_{currency.lower()}", "timestamp"]])
     return df
 
-# Plots a bar chart comparing GBP and target currency prices for each product
-def plot_prices(df, target_currency):
-    plt.figure(figsize=(10, 5))
+def plot(df, currency):
+    # Plot GBP and converted prices side by side in bar chart
     plt.bar(df["name"], df["price_gbp"], label="GBP", alpha=0.6)
-    plt.bar(df["name"], df[f"price_{target_currency.lower()}"], label=target_currency.upper(), alpha=0.6)
-    plt.xticks(rotation=90)
-    plt.ylabel("Price")
-    plt.title(f"Product Prices in GBP vs {target_currency.upper()}")
-    plt.legend()
+    plt.bar(df["name"], df[f"price_{currency.lower()}"], label=currency.upper(), alpha=0.6)
+    plt.xticks(rotation=90)  # Rotate x labels
+    plt.title(f"GBP vs {currency.upper()} Prices")
     plt.tight_layout()
+    plt.legend()
     plt.show()
 
-# Main function that handles input, processing, and flow control
 def main():
-    print("=== Price Scraper + Currency Converter ===")
-    
-    # Get number of products to scrape, default to 10 on invalid input
+    # Main workflow: input, scrape, convert, save, display, optionally plot
+    print("=== Book Price Scraper + Converter ===")
+
     try:
-        num_products = int(input("Enter number of products to scrape (min 10): "))
-        if num_products < 1:
-            raise ValueError
-    except ValueError:
-        num_products = 10
-        print("Invalid input. Defaulting to 10 products.")
+        count = int(input("How many books to scrape? "))  # Number of books
+        if count < 1:
+            count = 10
+    except:
+        count = 10  # Default count
+        print("Invalid input. Defaulting to 10.")
 
-    # Get target currency or default to KES
-    target_currency = input("Enter target currency code (e.g., KES, USD, EUR): ").strip().upper()
-    if not target_currency:
-        target_currency = "KES"
-        print("No input provided. Defaulting to KES.")
+    currency = input("Target currency (e.g., USD): ").strip().upper() or "KES"  # Target currency
 
-    print("Scraping product prices...")
-    products = scrape_books(num_products)
-
-    if not products:
-        print("No products found.")
+    books = scrape_books(count)  # Scrape books
+    if not books:
+        print("No books found. Exiting.")
         return
 
-    print(f"Fetching exchange rate GBP to {target_currency}...")
-    rate = get_exchange_rate(target_currency)
-    print(f"Exchange rate: 1 GBP = {rate} {target_currency}")
+    rate = get_rate(currency)  # Get exchange rate
+    print(f"1 GBP = {rate} {currency}")
+    books = convert(books, rate, currency)  # Convert prices
 
-    products = convert_prices(products, rate, target_currency)
-    save_to_csv(products)
+    save_csv(books)  # Save data to CSV
+    df = show_table(books, currency)  # Show data table
 
-    df = display_table(products, target_currency)
-
-    # Ask user if they want to see a chart
-    plot_choice = input("Would you like to see a bar chart? (y/n): ").strip().lower()
-    if plot_choice == 'y':
-        plot_prices(df, target_currency)
+    if input("Show chart? (y/n): ").lower() == 'y':  # Optionally plot
+        plot(df, currency)
 
 if __name__ == "__main__":
     main()
